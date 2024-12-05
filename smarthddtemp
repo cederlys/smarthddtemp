@@ -1,0 +1,226 @@
+#!/bin/sh
+#
+# Read temperature from hard drives (or anything that smartctl can
+# read a temperature from, really).  See usage() below for usage.
+#
+# Requires smartctl, jq, mktemp and (if --sudo is used) sudo.
+
+usage()
+{
+    cat << EOF
+Usage: smarthddtemp [options] device
+
+Options:
+  --good low-high        Preferred temperature range.
+  --acceptable low-high  Accceptable temperature range.
+  --nagios               Produce Nagios Plugin-compatible output.
+  --sudo                 Use sudo to run smartctl.  The exact
+                         command to run is "/usr/sbin/smartctl -j -x
+                         $DEVICE".  It helps if you
+                         configure sudo to accept that without
+                         asking for a password.
+  --min X                Value to use as min value in Nagios performance data.
+  --max X                Value to use as max value in Nagios performance data.
+  --scan		 Scan for disks. Requires root. Incompatible
+                         with all other options.
+  --help                 Print help.
+
+Examples:
+
+  Just display the current temperature:
+
+    smarthddtemp /dev/sda
+
+  Run as a Nagios plugin:
+
+    smarthddtemp --nagios --sudo --good 20-35 --acceptable 15-55 /dev/sda
+EOF
+}
+
+GOOD=
+ACCEPTABLE=
+NAGIOS=false
+SUDO=false
+SCAN=false
+DEVICE=
+MIN=
+MAX=
+
+while [ $# -gt 0 ]
+do
+    case $1 in
+	--good)
+	    if [ $# -lt 2 ]
+	    then
+		echo "--good missing arg" >&2
+		exit 3
+	    fi
+	    GOOD=$2
+	    shift;;
+	--acceptable)
+	    if [ $# -lt 2 ]
+	    then
+		echo "--acceptable missing arg" >&2
+		exit 3
+	    fi
+	    ACCEPTABLE=$2
+	    shift;;
+	--min)
+	    if [ $# -lt 2 ]
+	    then
+		echo "--min missing arg" >&2
+		exit 3
+	    fi
+	    MIN=$2
+	    shift;;
+	--max)
+	    if [ $# -lt 2 ]
+	    then
+		echo "--max missing arg" >&2
+		exit 3
+	    fi
+	    MAX=$2
+	    shift;;
+	--nagios)
+	    NAGIOS=true;;
+	--sudo)
+	    SUDO=true;;
+	--scan)
+	    SCAN=true;;
+	--help)
+	    usage
+	    exit 0;;
+	/*)
+	    if [ -n "$DEVICE" ]
+	    then
+		echo "Only one device can be given" >&2
+		exit 3
+	    fi
+
+	    DEVICE=$1;;
+	*)
+	    echo "unsupported option '$1'" >&2
+	    exit 3
+    esac
+    shift
+done
+
+JSON=`mktemp`
+trap "rm -f $JSON" 0
+
+if $SCAN
+then
+    if $NAGIOS || $SUDO || [ -n "$GOOD" ] || [ -n "$ACCEPTABLE" ] \
+	    || [ -n "$DEVICE" ]
+    then
+	echo "--scan is incompatible with other options." >&2
+	exit 3
+    fi
+
+    if ! /usr/sbin/smartctl -j --scan > $JSON
+    then
+	# Assume smartctl has printed a good error message.
+	exit 3
+    fi
+    if /usr/bin/jq -r '.devices|.[]|.name' < $JSON
+    then
+	exit 0
+    else
+	exit 3
+    fi
+fi
+
+if [ -z "$DEVICE" ]
+then
+    echo "No device given" >&2
+    exit 3
+fi
+
+if $SUDO
+then
+    /usr/bin/sudo /usr/sbin/smartctl -j -x $DEVICE > $JSON
+else
+    /usr/sbin/smartctl -j -x $DEVICE > $JSON
+fi
+
+RV=$?
+if [ $RV -ne 0 ]
+then
+    /usr/bin/jq -r '.smartctl.messages|.[]|.string' $JSON
+    exit 3
+fi
+
+TEMP=`/usr/bin/jq .temperature.current $JSON`
+
+CODE=0
+WORD=OK
+MSG="Current temperature:"
+CRIT_HI=
+CRIT_LO=
+WARN_HI=
+WARN_LO=
+
+if [ -n "$ACCEPTABLE" ]
+then
+    CRIT_LO=${ACCEPTABLE%%-*}
+    CRIT_HI=${ACCEPTABLE##*-}
+
+    if [ "$TEMP" -gt "$CRIT_HI" ]
+    then
+	CODE=2
+	WORD=CRITICAL
+	MSG="Temperature critically high:"
+    elif [ "$TEMP" -lt "$CRIT_LO" ]
+    then
+	CODE=2
+	WORD=CRITICAL
+	MSG="Temperature critically low:"
+    fi
+fi
+
+if [ -n "$GOOD" ]
+then
+    WARN_LO=${GOOD%%-*}
+    WARN_HI=${GOOD##*-}
+
+    if [ $CODE -eq 0 ]
+    then
+	if [ "$TEMP" -gt "$WARN_HI" ]
+	then
+	    CODE=1
+	    WORD=WARNING
+	    MSG="Temperature too high:"
+	elif [ "$TEMP" -lt "$WARN_LO" ]
+	then
+	    CODE=1
+	    WORD=WARNING
+	    MSG="Temperature too low:"
+	fi
+    fi
+fi
+
+if $NAGIOS
+then
+    WARN=
+    CRIT=
+
+    if [ -n "$WARN_LO" ]
+    then
+	WARN="$WARN_LO:$WARN_HI"
+    fi
+
+    if [ -n "$CRIT_LO" ]
+    then
+	CRIT="$CRIT_LO:$CRIT_HI"
+    fi
+
+    echo "$WORD - $MSG $TEMP°C | temp=${TEMP}°C;$WARN;$CRIT;$MIN;$MAX"
+    exit $CODE
+elif [ -n "$WARN_LO" ] || [ -n "$CRIT_LO" ]
+then
+    echo $MSG $TEMP°C
+    exit $CODE
+else
+    echo $TEMP
+    exit 0
+fi

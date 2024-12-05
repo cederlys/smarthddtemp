@@ -208,15 +208,15 @@ then
 
     if [ -n "$WARN_LO" ]
     then
-	WARN="$WARN_LO:$WARN_HI"
+	WARN="$WARN_HI"
     fi
 
     if [ -n "$CRIT_LO" ]
     then
-	CRIT="$CRIT_LO:$CRIT_HI"
+	CRIT="$CRIT_HI"
     fi
 
-    echo "$WORD - $MSG $TEMP°C | temp=${TEMP}°C;$WARN;$CRIT;$MIN;$MAX"
+    echo "$WORD - $MSG $TEMP°C | temp=${TEMP}C;$WARN;$CRIT;$MIN;$MAX"
     exit $CODE
 elif [ -n "$WARN_LO" ] || [ -n "$CRIT_LO" ]
 then

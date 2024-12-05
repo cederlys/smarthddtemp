@@ -143,14 +143,16 @@ else
     /usr/sbin/smartctl -j -x $DEVICE > $JSON
 fi
 
-RV=$?
-if [ $RV -ne 0 ]
+TEMP=`/usr/bin/jq .temperature.current $JSON` 2>/dev/null
+
+if [ "$TEMP" = null ] || [ -z "$TEMP" ]
 then
-    /usr/bin/jq -r '.smartctl.messages|.[]|.string' $JSON
+    if ! /usr/bin/jq -r '.smartctl.messages|.[]|.string' $JSON >&2 2>/dev/null
+    then
+	cat $JSON >&2
+    fi
     exit 3
 fi
-
-TEMP=`/usr/bin/jq .temperature.current $JSON`
 
 CODE=0
 WORD=OK
